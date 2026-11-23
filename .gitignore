@@ -1,0 +1,14 @@
+# artefatos de build
+*.o
+*.elf
+build/
+port/fe8_ps2.ld
+src/irx/
+tests/host_test
+tests/plan_test
+tests/render_dump
+# nunca versionar a ROM nem dados extraidos dela
+*.gba
+*.sav
+baserom.gba
+fe8.gba
