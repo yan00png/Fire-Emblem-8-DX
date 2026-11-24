@@ -13,6 +13,7 @@ extern unsigned char gGbaSram[0x10000];
 static unsigned char sShadow[SAVE_SIZE];
 static char sDir[160], sFile[176];
 static int sDirty, sQuiet, sOn;
+const char *Ps2SaveDir(void) { return sOn ? sDir : 0; }
 
 void Ps2Save_Init(const char *romPath)
 {

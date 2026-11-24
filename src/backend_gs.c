@@ -5,6 +5,7 @@
 #include <malloc.h>
 #include <gsKit.h>
 #include <dmaKit.h>
+#include <dma.h>
 #include <gsHires.h>
 #include <math.h>
 #include "gfx_cache.h"
@@ -15,6 +16,7 @@
 #define NUM_CLUTS (3 + 16)
 #define MS(c) ((c) / 294912.0f)
 
+static uint32_t sUpBytes, sUpAcc;   /* bytes enviados ao GS (diagnostico) */
 static uint32_t prof[8], profAcc[8], profSnap[8], profAccP, profSnapP, profAccN, profLastEnd, profFrozen;
 /* slots: 0 cache de camadas, 1 upload de texturas, 2 montagem do desenho, 3 GS+vsync, 4 logica do jogo, 5 sistema (audio/save/vblank cb) */
 uint32_t BeCycles(void) { uint32_t c; __asm__ volatile("mfc0 %0, $9" : "=r"(c)); return c; }
@@ -34,6 +36,18 @@ static void ProfileFrame(void)
     {
         for (int i = 0; i < 8; i++) { profSnap[i] = profAcc[i] / profAccN; profAcc[i] = 0; }
         profSnapP = profAccP / profAccN; profAccP = profAccN = 0;
+#ifdef PROFLOG
+        {
+            extern const char *Ps2SaveDir(void);
+            const char *d = Ps2SaveDir();
+            if (d)
+            {
+                char fn[200]; snprintf(fn, sizeof fn, "%s/prof.txt", d);
+                FILE *f = fopen(fn, "a");
+                if (f) { fprintf(f, "kb=%u per=%.2f cache=%.2f up=%.2f draw=%.2f gs=%.2f logic=%.2f sys=%.2f\n", sUpAcc / 30 / 1024, MS(profSnapP), MS(profSnap[0]), MS(profSnap[1]), MS(profSnap[2]), MS(profSnap[3]), MS(profSnap[4]), MS(profSnap[5])); fclose(f); }
+            }
+        }
+#endif
     }
 }
 
@@ -59,6 +73,12 @@ static int sScreenFx = 0;  /* 0 nada, 1 LCD (linhas finas), 2 scanlines. */
 static int sSizeSel = 0;
 static int sPad = 0;           /* 16:9 nativo: colunas extras de cada lado (em pixels do GBA) */
 #define WS_PAD 22      /* 160 * 16/9 = 284 -> (284 - 240) / 2 */
+#ifdef BAND_OFF
+static int sBand = 0;
+#else
+static int sBand = 1;
+#endif
+/* envia so as faixas alteradas (0 = imagem inteira, como antes) */
 static int sForceUpload = 0;   /* VRAM refeita (troca de modo): reenviar tudo nos proximos quadros */
 static void (*sUiHook)(void);
 
@@ -318,6 +338,7 @@ static u8 sStage[2][STAGE_SIZE] __attribute__((aligned(64)));
 static int sStageIdx, sStageOff;
 static void Send(void *mem, int w, int h, u32 tbp, u32 psm, u32 tbw, u8 clut)
 {
+    sUpBytes += gsKit_texture_size_ee(w, h, psm);
     if (sHires && !HIRES_DIRECT)
     {
         u32 bytes = (gsKit_texture_size_ee(w, h, psm) + 63) & ~63u;
@@ -330,6 +351,34 @@ static void Send(void *mem, int w, int h, u32 tbp, u32 psm, u32 tbw, u8 clut)
     else gsKit_texture_send((u32 *)mem, w, h, tbp, psm, tbw, clut);
 }
 
+
+/* Envia so as linhas [y0, y0+h) de uma textura de largura w (memoria linear a partir de mem): em vez de reenviar a imagem
+ * inteira, o destino (TRXPOS.DSAY) fica y0 linhas abaixo. So fora do hires (la o envio passa pela fila do quadro). */
+static u64 sBandPkt[16] __attribute__((aligned(64)));
+static void SendBand(u8 *mem, int w, int y0, int h, u32 tbp, u32 psm, u32 tbw, int bitsPerPx)
+{
+    u32 bytes = (u32)w * h * bitsPerPx / 8;
+    u32 qw = (bytes + 15) >> 4;
+    if (qw == 0 || qw > 0x7FFF) return;
+    sUpBytes += bytes;
+    u64 *q = sBandPkt;
+    u64 *base = (u64 *)((u32)sBandPkt | 0x20000000);   /* nao-cacheado: a CPU escreve, o DMA le */
+    /* tag DMA CNT (7 qw: GIF A+D tag + 4 registradores + tag de IMAGE) */
+    base[0] = 6ull | (1ull << 28); base[1] = 0;
+    base[2] = 4ull | (1ull << 15) | (0ull << 58) | (1ull << 60); base[3] = 0xEull;          /* GIF tag PACKED, NREG=1 (A+D), NLOOP=4 */
+    base[4] = ((u64)(tbp / 256) << 32) | ((u64)tbw << 48) | ((u64)psm << 56); base[5] = 0x50;   /* BITBLTBUF */
+    base[6] = ((u64)0 << 32) | ((u64)y0 << 48); base[7] = 0x51;                                    /* TRXPOS: DSAX=0, DSAY=y0 */
+    base[8] = (u64)w | ((u64)h << 32); base[9] = 0x52;                                              /* TRXREG */
+    base[10] = 0; base[11] = 0x53;                                                                  /* TRXDIR = host -> local */
+    base[12] = (u64)qw | (1ull << 15) | (2ull << 58); base[13] = 0;                                 /* GIF tag IMAGE */
+    /* tag DMA REF para os pixels (fim da cadeia) */
+    base[14] = (u64)qw | (0ull << 28) | ((u64)((u32)mem & 0x7FFFFFFF) << 32); base[15] = 0;       /* REFE */
+    (void)q;
+    dma_channel_wait(DMA_CHANNEL_GIF, 0);
+    dma_channel_send_chain(DMA_CHANNEL_GIF, sBandPkt, 0, 0, 0);
+    dma_channel_wait(DMA_CHANNEL_GIF, 0);
+}
+
 /* No 1080i a lista de desenho e alternada entre duas filas e reenviada por passada: um upload so vale se estiver
  * em varias filas seguidas. Por isso, no hires, cada "sujo" gera REP reenvios nos quadros seguintes. */
 #define HIRES_REP 4
@@ -339,7 +388,7 @@ void BeSync(void)
     FlushCache(0);
     if (!gBeDbg[4]) { gPalDirty = 0; gObjDirty = 0; for (int i = 0; i < 4; i++) gBgLayer[i].dirty = 0; return; }
     int pal = gPalDirty, obj = gObjDirty;
-    if (sForceUpload > 0) { sForceUpload--; pal = obj = 1; for (int i = 0; i < 4; i++) gBgLayer[i].dirty = 1; }
+    if (sForceUpload > 0) { sForceUpload--; pal = obj = 1; for (int i = 0; i < 4; i++) GfxMarkAll(&gBgLayer[i]); GfxMarkObjAll(); }
     if (sHires)
     {
         if (pal) repPal = HIRES_REP;
@@ -358,8 +407,18 @@ void BeSync(void)
     }
     if (obj)
     {
-        Send(tex[TEX_OBJ4].Mem, 256, 256, tex[TEX_OBJ4].Vram, GS_PSM_T4, 4, GS_CLUT_NONE);
-        Send(tex[TEX_OBJ8].Mem, 128, 256, tex[TEX_OBJ8].Vram, GS_PSM_T8, 2, GS_CLUT_NONE);
+        int r0 = gObjRow0, r1 = gObjRow1;
+        if (!sHires && r1 > r0 && sBand)
+        {
+            SendBand((u8 *)tex[TEX_OBJ4].Mem + r0 * 8 * 128, 256, r0 * 8, (r1 - r0) * 8, tex[TEX_OBJ4].Vram, GS_PSM_T4, 4, 4);
+            SendBand((u8 *)tex[TEX_OBJ8].Mem + r0 * 8 * 128, 128, r0 * 8, (r1 - r0) * 8, tex[TEX_OBJ8].Vram, GS_PSM_T8, 2, 8);
+        }
+        else
+        {
+            Send(tex[TEX_OBJ4].Mem, 256, 256, tex[TEX_OBJ4].Vram, GS_PSM_T4, 4, GS_CLUT_NONE);
+            Send(tex[TEX_OBJ8].Mem, 128, 256, tex[TEX_OBJ8].Vram, GS_PSM_T8, 2, GS_CLUT_NONE);
+        }
+        gObjRow0 = 32; gObjRow1 = 0;
     }
     for (int i = 0; i < 4; i++)
     {
@@ -372,8 +431,12 @@ void BeSync(void)
             if (up) repBg[i]--;
         }
         if (!up) continue;
-        Send(tex[i].Mem, LAYER_STRIDE, L->hPx, tex[i].Vram, GS_PSM_T8, LAYER_STRIDE / 64, GS_CLUT_NONE);
-        L->dirty = 0;
+        int y0 = L->dy0 < 0 ? 0 : L->dy0, y1 = L->dy1 > L->hPx ? L->hPx : L->dy1;
+        if (!sHires && sBand && y1 > y0)
+            SendBand((u8 *)tex[i].Mem + y0 * LAYER_STRIDE, LAYER_STRIDE, y0, y1 - y0, tex[i].Vram, GS_PSM_T8, LAYER_STRIDE / 64, 8);
+        else
+            Send(tex[i].Mem, LAYER_STRIDE, L->hPx, tex[i].Vram, GS_PSM_T8, LAYER_STRIDE / 64, GS_CLUT_NONE);
+        L->dirty = 0; L->dy0 = 1 << 20; L->dy1 = 0;
     }
     FlushCache(0);   /* tambem fora do hires: ClutFx escreve nos buffers de paleta (cache) DEPOIS do flush do inicio; o DMA le a RAM */
 }
@@ -512,7 +575,9 @@ static void DrawScreenFx(float x0, float x1)
 
 void BeEndFrame(void)
 {
+    sUpAcc += sUpBytes; sUpBytes = 0;
     ProfileFrame();
+    if (profAccN == 0) sUpAcc = 0;
     /* faixas pretas por cima: escondem tudo que passou dos 240x160 (sprites parcialmente fora) */
     u64 k = GS_SETREG_RGBAQ(0, 0, 0, 0x80, 0);
     float x0 = ox - sPad * SX, x1 = ox + (GBA_W + sPad) * SX, y1 = oy + GBA_H * SY;
@@ -555,7 +620,8 @@ void BeEndFrame(void)
 void BeNesDone(void)
 {
     sForceUpload = sHires ? 6 : 2;               /* a VRAM das camadas foi usada pelo NES: reenviar tudo ao voltar */
-    for (int i = 0; i < 4; i++) gBgLayer[i].dirty = 1;
+    for (int i = 0; i < 4; i++) GfxMarkAll(&gBgLayer[i]);
+    GfxMarkObjAll();
     sClMode = -1;
 }
 void BeNesPresent(const uint16_t *pix, int overscan, int aspect, int linear, int scan, void (*overlay)(void))

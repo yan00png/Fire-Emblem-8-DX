@@ -7,6 +7,7 @@ extern unsigned char gGbaIo[], gGbaPalram[], gGbaVram[], gGbaOam[];
 
 BgLayerCache gBgLayer[4];
 int gPalDirty, gObjDirty;
+int gObjRow0 = 32, gObjRow1 = 0;
 uint16_t gClutBg4[256] __attribute__((aligned(64)));
 uint16_t gClutBg8[256] __attribute__((aligned(64)));
 uint16_t gClutObj8[256] __attribute__((aligned(64)));
@@ -22,11 +23,13 @@ static uint8_t sPalShadow[0x400];
 
 static uint16_t Io16(int off) { return *(uint16_t *)(gGbaIo + off); }
 
+static void BuildLut4(void);
 void GfxCacheInit(void)
 {
+    BuildLut4();
     memset(sVramShadow, 0xA5, sizeof sVramShadow);
     memset(sPalShadow, 0xA5, sizeof sPalShadow);
-    for (int i = 0; i < 4; i++) { gBgLayer[i].pix = sPix[i]; gBgLayer[i].sig = 0xFFFFFFFF; }
+    for (int i = 0; i < 4; i++) { gBgLayer[i].pix = sPix[i]; gBgLayer[i].sig = 0xFFFFFFFF; gBgLayer[i].dy0 = 1 << 20; gBgLayer[i].dy1 = 0; }
 }
 
 /* posicao de um indice de 256 cores no CLUT do GS (CSM1 troca os blocos 8-15 e 16-23) */
@@ -51,6 +54,8 @@ static void RebuildObjAtlases(void)
     for (int r = 0; r < 32; r++)
     {
         if (!sBlkDirty[64 + r]) continue;
+        if (r < gObjRow0) gObjRow0 = r;
+        if (r + 1 > gObjRow1) gObjRow1 = r + 1;
         const uint32_t *v = (const uint32_t *)(gGbaVram + 0x10000 + r * 1024);
         uint32_t *d4 = (uint32_t *)(gObjAtlas4 + r * 8 * 128);
         for (int t = 0; t < 32; t++)
@@ -59,6 +64,20 @@ static void RebuildObjAtlases(void)
         for (int t = 0; t < 16; t++)
             for (int y = 0; y < 8; y++) { d8[y * 32 + t * 2] = v[t * 16 + y * 2]; d8[y * 32 + t * 2 + 1] = v[t * 16 + y * 2 + 1]; }
     }
+}
+
+/* byte de 4bpp (2 pixels) -> 2 indices de 8 bits (banco*16+cor), em ordem normal e espelhada */
+static uint16_t sLut4[2][16][256];
+static void BuildLut4(void)
+{
+    for (int bank = 0; bank < 16; bank++)
+        for (int b = 0; b < 256; b++)
+        {
+            int lo = b & 15, hi = b >> 4;
+            uint16_t l = lo ? bank * 16 + lo : 0, h = hi ? bank * 16 + hi : 0;
+            sLut4[0][bank][b] = l | (h << 8);   /* pixel par = nibble baixo */
+            sLut4[1][bank][b] = h | (l << 8);   /* espelhado */
+        }
 }
 
 static void ComposeTile(BgLayerCache *L, int charStart, int tx, int ty, uint16_t e)
@@ -78,14 +97,15 @@ static void ComposeTile(BgLayerCache *L, int charStart, int tx, int ty, uint16_t
         if (L->is8bpp)
             for (int x = 0; x < 8; x++) { d[x] = src[sy * 8 + (hf ? 7 - x : x)]; any |= d[x]; }
         else
-            for (int x = 0; x < 8; x++)
-            {
-                int px = hf ? 7 - x : x;
-                uint8_t b = src[sy * 4 + (px >> 1)];
-                int c = (px & 1) ? (b >> 4) : (b & 15);
-                d[x] = c ? bank * 16 + c : 0;
-                any |= d[x];
-            }
+        {
+            const uint16_t *lut = sLut4[hf][bank];
+            const uint8_t *r = src + sy * 4;
+            uint32_t a, b;
+            if (!hf) { a = lut[r[0]] | (lut[r[1]] << 16); b = lut[r[2]] | (lut[r[3]] << 16); }
+            else     { a = lut[r[3]] | (lut[r[2]] << 16); b = lut[r[1]] | (lut[r[0]] << 16); }
+            ((uint32_t *)d)[0] = a; ((uint32_t *)d)[1] = b;
+            any |= (a | b) != 0;
+        }
     }
     *emp = !any;
 }
@@ -152,9 +172,11 @@ void GfxCacheUpdate(void)
                     if (!full && e == L->shadowMap[ty * 64 + tx] && !charDirty) continue;
                     L->shadowMap[ty * 64 + tx] = e;
                     ComposeTile(L, charStart, tx, ty, e);
+                    if (ty * 8 < L->dy0) L->dy0 = ty * 8;
+                    if (ty * 8 + 8 > L->dy1) L->dy1 = ty * 8 + 8;
                     changed = 1;
                 }
-            if (changed || full) L->dirty = 1;
+            if (changed || full) { L->dirty = 1; if (full) { L->dy0 = 0; L->dy1 = L->hPx; } }
             continue;
         }
         int charBase = (cnt >> 2) & 3, is8 = (cnt >> 7) & 1, scrBase = (cnt >> 8) & 0x1F, size = cnt >> 14;
@@ -184,9 +206,11 @@ void GfxCacheUpdate(void)
                 }
                 L->shadowMap[ty * 64 + tx] = e;
                 ComposeTile(L, charStart, tx, ty, e);
+                if (ty * 8 < L->dy0) L->dy0 = ty * 8;
+                if (ty * 8 + 8 > L->dy1) L->dy1 = ty * 8 + 8;
                 changed = 1;
             }
-        if (changed || full) L->dirty = 1;
+        if (changed || full) { L->dirty = 1; if (full) { L->dy0 = 0; L->dy1 = L->hPx; } }
     }
 }
 

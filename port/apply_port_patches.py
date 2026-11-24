@@ -203,3 +203,6 @@ _p = os.path.join(D, "src", "banim-ekrbattleintro.c")
 _s = open(_p).read()
 _s2 = _re.sub(r"\b(unit_bu[12])->pClassData->", lambda m: "((%s)->pClassData ? (%s)->pClassData : (const struct ClassData *)(void *)gFe8NullUnitBuf)->" % (m.group(1), m.group(1)), _s)
 if _s2 != _s: open(_p, "w").write(_s2)
+
+# --- CanUnitUseWeapon com unidade vazia (pClassData/pCharacterData NULL): UNIT_CATTRIBUTES le NULL+0x28 (BIOS no GBA, TLB miss no PS2) ---
+sub1("src/bmitem.c", "s8 CanUnitUseWeapon(struct Unit* unit, int item) {\n    if (item == 0)\n        return FALSE;\n", "s8 CanUnitUseWeapon(struct Unit* unit, int item) {\n    if (item == 0)\n        return FALSE;\n\n    if (unit == NULL || unit->pClassData == NULL || unit->pCharacterData == NULL)\n        return FALSE;\n")
