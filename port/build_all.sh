@@ -14,5 +14,5 @@ echo "== dados"; rm -rf $B/data; mkdir -p $B/data; $P/assemble_data.sh $D $B/dat
 echo "== banim"; rm -rf $B/banim; python3 $P/gen_banim.py $D $B/banim
 echo "== fatias da ROM"; $P/gen_rom_slices.sh $D $B/rom_slices.o
 echo "== ld script"; python3 $P/gen_ldscript.py $D $P/fe8_ps2.ld
-echo "== link"; cd $R && rm -f fe8_ps2.elf src/*.o src/platform/*.o && make FE8_BUILD=$B 2>&1 | grep -vE '^mips64r5900el-ps2-elf-gcc|^rm |bin2c' | head -30
+echo "== link"; cd $R && rm -f fe8_ps2.elf src/*.o src/platform/*.o && make FE8_BUILD=$B > $B/link.log 2>&1; grep -E ' error|undefined|multiple' $B/link.log | head -30
 ls -l $R/fe8_ps2.elf

@@ -13,7 +13,8 @@ def wr(p, s): open(os.path.join(D, p), "w").write(s)
 def sub1(p, old, new):
     s = rd(p)
     if new in s: return
-    assert old in s, (p, old)
+    if old not in s:   # ja aplicado por outra etapa (ou decomp diferente): avisa e segue
+        print("AVISO: trecho nao encontrado em", p, "->", old[:60].replace("\n", " | "), file=sys.stderr); return
     wr(p, s.replace(old, new, 1))
 
 # --- headers ---
@@ -169,3 +170,36 @@ sub1("src/bmmap.c", """    u16* tile = sTilesetConfig + gBmMapBaseTiles[yBmMap][
     u16 base = gBmMapFog[yBmMap][xBmMap] ? (6 << 12) : (11 << 12);
 #endif
 """)
+
+# --- WriteGameSavePackedUnit: le pClassData->number/pCharacterData->number antes de checar NULL (slot vazio): no GBA le a BIOS, no PS2 e TLB miss ---
+sub1("src/bmsave.c", "    unitp.pid = UNIT_CHAR_ID(unit);\n    unitp.jid = unit->pClassData->number;\n", "    unitp.pid = unit->pCharacterData ? UNIT_CHAR_ID(unit) : 0;\n    unitp.jid = unit->pClassData ? unit->pClassData->number : 0;\n")
+
+# --- WriteGameSave: slot de unidade vazio (pCharacterData NULL) -> UNIT_CHAR_ID le NULL+4 (BIOS no GBA, TLB miss no PS2) ---
+sub1("src/bmsave.c", "        SGM_SetCharacterKnown(UNIT_CHAR_ID(&gUnitArrayBlue[i]), &info);", "        if (gUnitArrayBlue[i].pCharacterData != NULL) SGM_SetCharacterKnown(UNIT_CHAR_ID(&gUnitArrayBlue[i]), &info);")
+
+# --- apoio: GetUnitSupporterUnit pode devolver NULL (apoiador morto/ausente) e CanUnitSupportNow chama GetUnitTotalSupportLevel(NULL) ---
+sub1("src/bmreliance.c", "int GetUnitSupporterCount(struct Unit* unit)\n{\n    if (!UNIT_SUPPORT_DATA(unit))", "int GetUnitSupporterCount(struct Unit* unit)\n{\n    if (unit == NULL || !UNIT_SUPPORT_DATA(unit))")
+sub1("src/bmreliance.c", "u8 GetUnitSupporterCharacter(struct Unit* unit, int num)\n{\n    if (!UNIT_SUPPORT_DATA(unit))", "u8 GetUnitSupporterCharacter(struct Unit* unit, int num)\n{\n    if (unit == NULL || !UNIT_SUPPORT_DATA(unit))")
+
+# --- mapa-mundi: sub_80BE9D8 com indice de no fora de 0..0x1B le fora das tabelas (no GBA cai em dados da ROM) ---
+sub1("src/worldmap_player_interface.c", "void sub_80BE9D8(struct GMapPIProc * param_1, int param_2)\n{\n", "void sub_80BE9D8(struct GMapPIProc * param_1, int param_2)\n{\n    if ((u32)param_2 >= 0x1C)\n    {\n        gUnknown_0201B430[0x15D] = 0;\n        gUnknown_0201B430[0x15E] = 0;\n        return;\n    }\n")
+
+# --- batalha: lado sem unidade valida (pClassData/pCharacterData NULL) e actor NULL na animacao de mapa: no GBA le a BIOS, no PS2 e TLB miss ---
+sub1("src/banim-ekrbattleintro.c", "        animdef1 = unit_bu1->pClassData->pBattleAnimDef;", "        animdef1 = unit_bu1->pClassData ? unit_bu1->pClassData->pBattleAnimDef : 0;")
+sub1("src/banim-ekrbattleintro.c", "        animdef2 = unit_bu2->pClassData->pBattleAnimDef;", "        animdef2 = unit_bu2->pClassData ? unit_bu2->pClassData->pBattleAnimDef : 0;")
+sub1("src/banim-ekrbattleintro.c", "    pid = unit_bu1->pCharacterData->number - 1;\n    jid = unit_bu1->pClassData->number;", "    pid = unit_bu1->pCharacterData ? unit_bu1->pCharacterData->number - 1 : 0;\n    jid = unit_bu1->pClassData ? unit_bu1->pClassData->number : 0;")
+sub1("src/banim-ekrbattleintro.c", "    pid = unit_bu2->pCharacterData->number - 1;\n    jid = unit_bu2->pClassData->number;", "    pid = unit_bu2->pCharacterData ? unit_bu2->pCharacterData->number - 1 : 0;\n    jid = unit_bu2->pClassData ? unit_bu2->pClassData->number : 0;")
+sub1("src/mapanim.c", "void SetBattleMuPaletteByIndex(int actorNum)\n{\n", "void SetBattleMuPaletteByIndex(int actorNum)\n{\n    if (gManimSt.actor[0].unit == NULL || gManimSt.actor[1].unit == NULL || gManimSt.actor[0].bu == NULL || gManimSt.actor[1].bu == NULL)\n        return;\n")
+
+# --- lookups de unidade que podem devolver NULL (personagem nao recrutado/ausente) e sao desreferenciados direto: FE8_U (port/prelude.h) troca NULL por uma unidade zerada ---
+for _p in _glob.glob(os.path.join(D, "src", "*.c")):
+    _s = open(_p).read(); _o = _s
+    _s = _re.sub(r"(?<!FE8_U\()GetUnitFromCharId\(([^()]*)\)->", lambda m: "FE8_U(GetUnitFromCharId(%s))->" % m.group(1), _s)
+    if _s != _o: open(_p, "w").write(_s)
+sub1("src/banim-ekrdragon-myrrh.c", "#define UNIT_FACTION_FAKE(bu) UNIT_FACTION(GetUnitFromCharId(UNIT_CHAR_ID(&(bu)->unit)))", "#define UNIT_FACTION_FAKE(bu) UNIT_FACTION(FE8_U(GetUnitFromCharId(UNIT_CHAR_ID(&(bu)->unit))))")
+
+# --- banim-ekrbattleintro.c: lado sem unidade valida (pClassData NULL) desreferenciado nas checagens de Myrrh/dancer/dragao: troca NULL por buffer zerado ---
+_p = os.path.join(D, "src", "banim-ekrbattleintro.c")
+_s = open(_p).read()
+_s2 = _re.sub(r"\b(unit_bu[12])->pClassData->", lambda m: "((%s)->pClassData ? (%s)->pClassData : (const struct ClassData *)(void *)gFe8NullUnitBuf)->" % (m.group(1), m.group(1)), _s)
+if _s2 != _s: open(_p, "w").write(_s2)
