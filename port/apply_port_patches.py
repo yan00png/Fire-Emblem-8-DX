@@ -206,3 +206,82 @@ if _s2 != _s: open(_p, "w").write(_s2)
 
 # --- CanUnitUseWeapon com unidade vazia (pClassData/pCharacterData NULL): UNIT_CATTRIBUTES le NULL+0x28 (BIOS no GBA, TLB miss no PS2) ---
 sub1("src/bmitem.c", "s8 CanUnitUseWeapon(struct Unit* unit, int item) {\n    if (item == 0)\n        return FALSE;\n", "s8 CanUnitUseWeapon(struct Unit* unit, int item) {\n    if (item == 0)\n        return FALSE;\n\n    if (unit == NULL || unit->pClassData == NULL || unit->pCharacterData == NULL)\n        return FALSE;\n")
+
+# --- 16:9 nativo: mapa do capitulo numa camada larga (ver gfx_cache.c / render.c: gPortWide*) ---
+sub1("src/bmmap.c", "void UpdateBmMapDisplay(void) {\n    // TODO: figure out\n", r'''#ifdef _EE
+extern int BeWsPad(void);
+u16 gPortWideTm[2][0x800];     /* [0] = BG3 (mapa), [1] = BG2 (alcance de movimento); 64x32 tiles em 2 blocos de 32x32 (formato GBA, tamanho 1) */
+extern int gPortWideAge, gPortWideBg2, gPortWideHofs, gPortWideVofs;
+#define PW_COLS 20   /* (15 + 284) / 16 = 18.7 -> 19 metatiles; 20 por folga */
+#define PW_ROWS 11
+static void PortWidePut(u16* bg, int mx, int my, u16 a, u16 b, u16 c, u16 d) {
+    int tx = mx * 2, ty = my * 2;
+    u16* o = bg + ((tx >> 5) << 10) + ty * 32 + (tx & 31);
+    o[0] = a; o[1] = b; o[32] = c; o[33] = d;
+}
+static void PortWideMapRender(void) {
+    int pad = BeWsPad();
+    int ix, iy;
+    if (pad == 0) { gPortWideAge = 99; return; }
+
+    {   /* camera: o jogo ve 240 px, a tela mostra pad px a mais de cada lado */
+        int w = gBmMapSize.x * 16;
+        int lo = pad, hi = w - DISPLAY_WIDTH - pad;
+        if (hi < lo) lo = hi = (w - DISPLAY_WIDTH) / 2;
+        gBmSt.cameraMax.x = hi;
+        if (gBmSt.camera.x < lo) gBmSt.camera.x = lo;
+        if (gBmSt.camera.x > hi) gBmSt.camera.x = hi;
+    }
+    {
+        int sx = gBmSt.camera.x - pad;               /* x do mundo na borda esquerda da tela larga */
+        int ox = sx >> 4, oy = gBmSt.camera.y >> 4;
+        int ov = (gBmSt.gameStateBits & BM_FLAG_0) != 0;
+        gPortWideHofs = (sx & 15) + pad;             /* DrawBgStrip desenha a partir de x = -pad */
+        gPortWideVofs = gBmSt.camera.y & 15;
+        gPortWideBg2 = ov;
+        for (iy = 0; iy < PW_ROWS; iy++) {
+            for (ix = 0; ix < PW_COLS; ix++) {
+                int xm = ox + ix, ym = oy + iy;
+                int oob = ((u32)ym >= (u32)gBmMapSize.y || (u32)xm >= (u32)gBmMapSize.x);
+                if (oob) {
+                    PortWidePut(gPortWideTm[0], ix, iy, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF);
+                    if (ov) PortWidePut(gPortWideTm[1], ix, iy, 0, 0, 0, 0);
+                    continue;
+                }
+                {
+                    u16* tile = sTilesetConfig + gBmMapBaseTiles[ym][xm];
+                    u16 base = gBmMapFog[ym][xm] ? (6 << 12) : (11 << 12);
+                    PortWidePut(gPortWideTm[0], ix, iy, base + tile[0], base + tile[1], base + tile[2], base + tile[3]);
+                }
+                if (ov) {
+                    if (gMapMovementSigned[ym][xm] >= 0)
+                        PortWidePut(gPortWideTm[1], ix, iy, 0x4280, 0x4281, 0x4282, 0x4283);
+                    else if (gMapRangeSigned[ym][xm])
+                        PortWidePut(gPortWideTm[1], ix, iy, 0x5280, 0x5281, 0x5282, 0x5283);
+                    else
+                        PortWidePut(gPortWideTm[1], ix, iy, 0, 0, 0, 0);
+                }
+            }
+        }
+        gPortWideAge = 0;
+    }
+}
+#endif
+
+void UpdateBmMapDisplay(void) {
+    // TODO: figure out
+#ifdef _EE
+    PortWideMapRender();
+#endif
+''')
+
+# --- 16:9 nativo: corte de sprites fora da tela de 240 px alargado pelas colunas extras ---
+for _f, _pairs in (("src/bmudisp.c", [("x < -16 || x > DISPLAY_WIDTH+16", "x < -16 - BeWsPad() || x > DISPLAY_WIDTH+16 + BeWsPad()"),
+                                      ("x < -16 || x > DISPLAY_WIDTH)", "x < -16 - BeWsPad() || x > DISPLAY_WIDTH + BeWsPad())")]),
+                   ("src/mu.c", [("x < -0x10 || x > 0x100 ||", "x < -0x10 - BeWsPad() || x > 0x100 + BeWsPad() ||")]),
+                   ("src/bmusailment.c", [("(x < 0) || (x > DISPLAY_WIDTH)", "(x < -BeWsPad()) || (x > DISPLAY_WIDTH + BeWsPad())")])):
+    _p = os.path.join(D, _f)
+    _s = open(_p).read()
+    for _a, _b in _pairs:
+        _s = _s.replace(_a, _b)
+    open(_p, "w").write(_s)

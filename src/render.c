@@ -43,7 +43,15 @@ extern uint16_t gBg0XPosition, gBg1XPosition, gBg2XPosition;   /* posicao dos fu
 extern struct { uint8_t bytes[64]; } gCurrentRoomEntry;       /* so os bytes bg0Prop..bg2Prop (1..3) */
 extern struct { struct { uint16_t *pDecomp; uint16_t width, height; } backgrounds[3]; } gBgPointersAndDimensions;
 #else
-static int WsSafeScene(void) { return 0; }   /* FE8: sem colunas extras (tela fixa 240x160) */
+/* FE8: 16:9 nativo so enquanto o mapa do capitulo esta na tela (UpdateBmMapDisplay carimba gPortWideAge=0 a cada quadro);
+ * menus, batalha, status etc. seguem em 240x160 centralizados (pilarbox) */
+#ifdef WSDBG
+extern int16_t gBmMapSize[2];
+#define gBmMapSizeDbg gBmMapSize
+#endif
+int gPortWideAge = 99, gPortWideBg2, gPortWideHofs, gPortWideVofs;
+static int WsSafeScene(void) { return gPortWideAge <= 2; }
+static int WideLayer(int bg) { return gPortWideAge <= 2 && (bg == 3 || (bg == 2 && gPortWideBg2)); }
 #endif
 uint8_t gPortHudOamCount;   /* preenchido por HudUpdateOam (hud.c): slots 0..n-1 sao o HUD */
 #ifdef PORT_MZM
@@ -308,7 +316,11 @@ static void DrawBgStrip(int bg, int alpha, int shade, int y0, int y1, int hofs, 
     hofs &= W - 1; vofs &= H - 1;
     /* 16:9 nativo: so camadas largas (mapas de 512 px, os do gameplay) mostram as colunas extras; as de 256 px (menus, telas
      * fixas) repetiriam a imagem nas laterais, entao ficam so no centro */
+#ifdef PORT_MZM
     int pad = sWs;   /* gameplay: fundos de 256 px (parallax) se repetem e tambem enchem o 16:9; outras cenas: sem colunas extras */
+#else
+    int pad = WideLayer(bg) ? sWs : 0;   /* FE8: so a camada larga do mapa usa as colunas extras */
+#endif
     /* 16:9 nativo: alem das bordas da sala nao ha mapa carregado (a VRAM tem colunas antigas do outro lado do wrap de 512 px):
      * nas colunas extras fora da sala nao desenha nada (aparece a cor de fundo) */
     int xlo = -pad, xhi = 240 + pad;
@@ -419,6 +431,9 @@ static void DrawBgAffine(int bg, int alpha, int shade)
 static void DrawBg(int bg, int alpha, int shade)
 {
     if (gBgLayer[bg].affine) { if (WinAnyLayer(bg)) DrawBgAffine(bg, alpha, shade); return; }
+#ifndef PORT_MZM
+    if (WideLayer(bg)) { DrawBgStrip(bg, alpha, shade, 0, 160, gPortWideHofs, gPortWideVofs); return; }
+#endif
     uintptr_t ah = (uintptr_t)gGbaIo + 0x10 + bg * 4, av = ah + 2;
     uint16_t h0, v0, h, v;
     int y0 = 0, perLine = 0;
@@ -624,7 +639,11 @@ void RenderFrame(void)
     GfxCacheUpdate();
     BeProfileMark(0, BeCycles() - t0);
     uint16_t dispcnt = Io16(0);
-    { int safe = WsSafeScene(); sWs = safe ? BeWsPad() : 0; gRenderWsOn = safe; BeSetWsMask(BeWsPad() && !safe); }
+    { int safe = WsSafeScene(); sWs = safe ? BeWsPad() : 0; gRenderWsOn = safe; BeSetWsMask(BeWsPad() && !safe); 
+#ifdef WSDBG
+      { static int fr; if (++fr % 60 == 0) { extern void Ps2Cfg_Write(const char *, const void *, int); extern int snprintf(char *, unsigned, const char *, ...); char b[64]; int n = snprintf(b, sizeof b, "age=%d pad=%d safe=%d bg3=%d map=%dx%d hofs=%d\n", gPortWideAge, BeWsPad(), safe, WideLayer(3), gBmMapSizeDbg[0], gBmMapSizeDbg[1], gPortWideHofs); Ps2Cfg_Write("wdbg.txt", b, n); } }
+#endif
+      if (gPortWideAge < 99) gPortWideAge++; }
     HbSim();
     BeBeginFrame(*(uint16_t *)gGbaPalram);
     {   /* gradiente de fundo: o DMA de HBlank reescreve a cor 0 da paleta (backdrop) em cada linha */

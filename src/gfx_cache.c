@@ -6,6 +6,14 @@
 extern unsigned char gGbaIo[], gGbaPalram[], gGbaVram[], gGbaOam[];
 
 BgLayerCache gBgLayer[4];
+#ifndef PORT_MZM
+/* FE8 16:9 nativo: mapa do capitulo montado pelo jogo numa camada larga (64x32 tiles) em vez do anel de 16 colunas do GBA */
+extern uint16_t gPortWideTm[2][0x800];
+extern int gPortWideAge, gPortWideBg2;
+static inline int WideFor(int bg) { return gPortWideAge <= 2 && (bg == 3 || (bg == 2 && gPortWideBg2)); }
+#else
+static inline int WideFor(int bg) { (void)bg; return 0; }
+#endif
 int gPalDirty, gObjDirty;
 int gObjRow0 = 32, gObjRow1 = 0;
 uint16_t gClutBg4[256] __attribute__((aligned(64)));
@@ -85,6 +93,7 @@ static void ComposeTile(BgLayerCache *L, int charStart, int tx, int ty, uint16_t
     int tile = e & 0x3FF, hf = (e >> 10) & 1, vf = (e >> 11) & 1, bank = e >> 12;
     int sz = L->is8bpp ? 64 : 32;
     uint32_t addr = charStart + tile * sz;
+    if (e == 0xFFFF) { for (int y = 0; y < 8; y++) memset(L->pix + (ty * 8 + y) * LAYER_STRIDE + tx * 8, 0, 8); L->empty[ty * 64 + tx] = 1; return; }
     uint8_t *dstBase = L->pix + (ty * 8) * LAYER_STRIDE + tx * 8;
     uint8_t *emp = &L->empty[ty * 64 + tx];
     if (addr + sz > 0x18000) { for (int y = 0; y < 8; y++) memset(dstBase + y * LAYER_STRIDE, 0, 8); *emp = 1; return; }
@@ -180,7 +189,9 @@ void GfxCacheUpdate(void)
             continue;
         }
         int charBase = (cnt >> 2) & 3, is8 = (cnt >> 7) & 1, scrBase = (cnt >> 8) & 0x1F, size = cnt >> 14;
-        uint32_t sig = charBase | (is8 << 2) | (scrBase << 3) | (size << 8);
+        int wide = WideFor(bg);
+        if (wide) { size = 1; is8 = 0; }
+        uint32_t sig = charBase | (is8 << 2) | (scrBase << 3) | (size << 8) | (wide << 16);
         int wT = (size & 1) ? 64 : 32, hT = (size & 2) ? 64 : 32;
         int charStart = charBase * 0x4000;
         int full = (sig != L->sig);
@@ -189,9 +200,13 @@ void GfxCacheUpdate(void)
 
         int nblk = size == 0 ? 1 : (size == 3 ? 4 : 2);
         int mapStart = scrBase * 0x800;
-        if (!full && !charDirty && !AnyDirty(mapStart, mapStart + nblk * 0x800)) continue;
+        if (!wide && !full && !charDirty && !AnyDirty(mapStart, mapStart + nblk * 0x800)) continue;
 
+#ifndef PORT_MZM
+        const uint16_t *maps = wide ? gPortWideTm[bg == 3 ? 0 : 1] : (const uint16_t *)(gGbaVram + mapStart);
+#else
         const uint16_t *maps = (const uint16_t *)(gGbaVram + mapStart);
+#endif
         int changed = 0;
         for (int ty = 0; ty < hT; ty++)
             for (int tx = 0; tx < wT; tx++)
