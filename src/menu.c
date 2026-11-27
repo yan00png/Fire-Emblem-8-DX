@@ -131,7 +131,9 @@ static int sColor = 0;      /* 0 = PS2, 1 = correcao de cor do GBA */
 static int sFilter = 0;     /* 0 = OFF, 1 = LCD, 2 = SCANLINE */
 static const char *const sModeName[4] = {"160P", "480I", "480P", "1080I"};
 static const char *const sAspectName[4] = {"16:9 BARS", "4:3", "3:2", "16:9 STR"};
-enum { V_MODE, V_SIZE, V_ASPECT, V_FILTER, V_COLOR, V_PERF, V_FPS, V_BACK };
+enum { V_MODE, V_SIZE, V_ASPECT, V_FILTER, V_COLOR, V_PERF, V_FPS, V_LANG, V_BACK };
+extern int gPortLang;
+extern int PortLangAvailable(void);
 static int sConfirm = 0, sConfirmLeft = 0, sPrevVMode = 1;   /* confirmacao do 480p/1080i */
 static void Draw(void);
 static void DrawOverlays(void);
@@ -144,7 +146,7 @@ static int VideoRows(int *ids)
     if (sVMode == 1 && sAspect480 == 1) ids[n++] = V_SIZE;
     if (sVMode >= 1) ids[n++] = V_FILTER;
     ids[n++] = V_COLOR;
-    ids[n++] = V_PERF; ids[n++] = V_FPS; ids[n++] = V_BACK;
+    ids[n++] = V_PERF; ids[n++] = V_FPS; ids[n++] = V_LANG; ids[n++] = V_BACK;
     return n;
 }
 
@@ -304,6 +306,7 @@ static const char *Desc(const char *labels[], int sel, char *buf, int bn)
         case V_COLOR: return "GBA: CORES COMO NA TELA DO GBA";
         case V_PERF: return "BARRAS DE DESEMPENHO NA TELA";
         case V_FPS: return "MOSTRA OS FPS NO CANTO";
+        case V_LANG: return PortLangAvailable() ? "IDIOMA DO JOGO: INGLES OU PORTUGUES" : "SEM ARQUIVO DE TRADUCAO NA PASTA SAVE";
         default: return "VOLTA AO MENU";
     }
 }
@@ -319,7 +322,7 @@ static void Draw(void)
     { int tw = TextWidthH(title, 3) + 28, tx = px + pw / 2 - tw / 2;
       Rect(px + 8, py + 13, tx - px - 14, 2, C_GOLD, 128); Rect(tx + tw + 6, py + 13, px + pw - 8 - (tx + tw + 6), 2, C_GOLD, 128); }
 
-    const char *labels[8]; char vals[8][20];
+    const char *labels[12]; char vals[12][20];
     int n = 3;
     if (sPage == PAGE_MAIN)
     {
@@ -369,7 +372,7 @@ static void Draw(void)
     }
     else
     {
-        int ids[8]; n = VideoRows(ids);
+        int ids[12]; n = VideoRows(ids);
         for (int i = 0; i < n; i++)
         {
             vals[i][0] = 0;
@@ -381,16 +384,17 @@ static void Draw(void)
                 case V_COLOR: labels[i] = "COLOR"; strcpy(vals[i], sColor ? "< GBA >" : "< PS2 >"); break;
                 case V_FILTER: labels[i] = "FILTER"; { static const char *const fn[3] = { "< OFF >", "< LCD >", "< SCANLINE >" }; strcpy(vals[i], fn[sFilter]); } break;
                 case V_FPS: labels[i] = "FPS MONITOR"; strcpy(vals[i], sFps ? "< ON >" : "< OFF >"); break;
+                case V_LANG: labels[i] = "LANGUAGE"; strcpy(vals[i], gPortLang ? "< PORTUGUES >" : "< ENGLISH >"); break;
                 case V_PERF: labels[i] = "PERF BARS"; strcpy(vals[i], sPerf ? "< ON >" : "< OFF >"); break;
                 default: labels[i] = "BACK"; break;
             }
         }
     }
-    const int ry = py + 27, pitch = n >= 8 ? 16 : n >= 7 ? 17 : 18;
+    const int ry = py + 27, pitch = n >= 9 ? 14 : n >= 8 ? 16 : n >= 7 ? 17 : 18;
     for (int i = 0; i < n; i++)
     {
         int y = ry + i * pitch;
-        Bar(px + 8, y, pw - 16, pitch >= 18 ? 16 : 15, i == sSel);
+        Bar(px + 8, y, pw - 16, pitch >= 18 ? 16 : pitch >= 14 && pitch < 15 ? 13 : 15, i == sSel);
         TextH(px + 31, y + 4, 3, 0x000030, labels[i]); TextH(px + 31, y + 3, 3, 0xFFFFFF, labels[i]);
         if (vals[i][0]) DrawValue(px + pw - 14, y + 3, vals[i], i == sSel ? 0xFFF090 : C_LIME, i == sSel ? 0xFFFFFF : C_DIM);
     }
@@ -404,7 +408,7 @@ static void Draw(void)
 /* ---- configuracoes: <pasta da ROM>/save/video.cfg (so com pen-drive/host; em disco ficam so na sessao) ---- */
 static void VideoSave(void)
 {
-    uint8_t b[12] = { 'F', 'V', 'D', '1', (uint8_t)sVMode, (uint8_t)sSize, (uint8_t)sAspect, (uint8_t)sAspect480, (uint8_t)sPerf, (uint8_t)sFps, (uint8_t)sFilter, (uint8_t)sColor };
+    uint8_t b[13] = { 'F', 'V', 'D', '1', (uint8_t)sVMode, (uint8_t)sSize, (uint8_t)sAspect, (uint8_t)sAspect480, (uint8_t)sPerf, (uint8_t)sFps, (uint8_t)sFilter, (uint8_t)sColor, (uint8_t)gPortLang };
     Ps2Cfg_Write("video.cfg", b, sizeof b);
 }
 
@@ -606,7 +610,7 @@ void MenuVideoLoad(void)
     int n = Ps2Cfg_Read("video.cfg", b, sizeof b);
     if (n < 12 || b[0] != 'F' || b[1] != 'V' || b[2] != 'D' || b[3] != '1') return;
     if (b[4] > 3 || b[5] > 2 || b[6] > 3 || b[7] > 1 || b[10] > 2) return;
-    sVMode = b[4]; sSize = b[5]; sAspect = b[6]; sAspect480 = b[7]; sPerf = b[8] & 1; sFps = b[9] & 1; sFilter = b[10]; sColor = b[11] & 1;
+    sVMode = b[4]; sSize = b[5]; sAspect = b[6]; sAspect480 = b[7]; sPerf = b[8] & 1; sFps = b[9] & 1; sFilter = b[10]; sColor = b[11] & 1; gPortLang = (n >= 13 && b[12] == 1) ? 1 : 0;
     Apply();
     BeSetUiHook(sFps ? DrawOverlays : 0);
 }
@@ -633,7 +637,7 @@ void MenuRun(void)
         if (closing) { if (!p) break; continue; }        /* so volta ao jogo com todos os botoes soltos */
         if (waitRelease) { if (!(p & (K(PS2B_START) | K(PS2B_SELECT)))) waitRelease = 0; continue; }
 
-        int vids[8], vn = VideoRows(vids);
+        int vids[12], vn = VideoRows(vids);
         int count = sPage == PAGE_PERF ? 1 : sPage == PAGE_MAIN ? 4 : sPage == PAGE_DEBUG ? 8 : sPage == PAGE_CONTROL ? PAD_REMAP_COUNT + 2 : vn;
         if (e & K(PS2B_UP)) sSel = (sSel + count - 1) % count;
         if (e & K(PS2B_DOWN)) sSel = (sSel + 1) % count;
@@ -687,6 +691,7 @@ void MenuRun(void)
                 else if (id == V_FILTER) { sFilter = (sFilter + (dir < 0 ? 2 : 1)) % 3; Apply(); }
                 else if (id == V_PERF) { sPerf = !sPerf; Apply(); }
                 else if (id == V_FPS) sFps = !sFps;
+                else if (id == V_LANG) { extern int sActiveMsg; gPortLang ^= 1; sActiveMsg = -1; }
             }
         }
     }

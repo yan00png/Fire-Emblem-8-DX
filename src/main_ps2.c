@@ -132,6 +132,14 @@ static void PortFrame(void)
     if (h && (ie & 1) && (ime & 1)) h();
     struct LcdState lcd; LcdDecode(&lcd);
     sFrameNo++;
+#ifdef FE8_GAME
+    if (sFrameNo == 180)      /* dump dos textos originais: crie save/dump_msgs.flag e inicie o jogo */
+    {
+        extern void PortLangDumpMsgs(void); extern int Ps2Cfg_Read(const char *, void *, int); extern void Ps2Cfg_Write(const char *, const void *, int);
+        char t[4];
+        if (Ps2Cfg_Read("dump_msgs.flag", t, 1) > 0) { PortLangDumpMsgs(); Ps2Cfg_Write("dump_msgs.flag", t, 0); }   /* o arquivo tem 1 byte; depois do dump fica vazio */
+    }
+#endif
 #ifdef CRASH_TEST_FRAME
     if (sFrameNo == CRASH_TEST_FRAME) { for (;;) { __asm__ volatile(""); } }
 #endif
@@ -296,6 +304,7 @@ int main(int argc, char **argv)
     { extern int Ps2Audio_Init(void), Ps2Audio_LoadSoundData(const char *); if (Ps2Audio_Init()) Ps2Audio_LoadSoundData(path); }
     MenuLoadingEnd();
     MenuVideoLoad();
+    { extern void PortLangInit(void); PortLangInit(); }
     gPlatformVBlankWait = PortFrame;
     Ps2Log("AgbMain...");
 #ifdef NULLTEST

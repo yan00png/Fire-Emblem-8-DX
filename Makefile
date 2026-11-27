@@ -1,7 +1,7 @@
 EE_BIN = fe8_ps2.elf
 IRX_NAMES = iomanX fileXio usbd bdm bdmfs_fatfs usbmass_bd libsd audsrv
 EE_IRX_OBJS = $(addprefix src/irx/,$(addsuffix _irx.o,$(IRX_NAMES)))
-EE_OBJS = src/platform/ps2_platform.o src/platform/ps2_rom.o src/platform/ps2_log.o src/platform/ps2_pad.o src/platform/ps2_crash.o src/platform/ps2_save.o src/platform/ps2_romrun.o src/platform/ps2_audio.o src/platform/ps2_psg.o $(EE_IRX_OBJS) src/menu.o src/main_ps2.o src/backend_gs.o src/gfx_cache.o src/render.o src/platform/gba_mem.o src/platform/bios.o src/platform/dma.o src/platform/lcd.o
+EE_OBJS = src/platform/ps2_platform.o src/platform/ps2_rom.o src/platform/ps2_log.o src/platform/ps2_pad.o src/platform/ps2_crash.o src/platform/ps2_save.o src/platform/ps2_romrun.o src/platform/ps2_audio.o src/platform/ps2_psg.o $(EE_IRX_OBJS) src/menu.o src/lang.o src/main_ps2.o src/backend_gs.o src/gfx_cache.o src/render.o src/platform/gba_mem.o src/platform/bios.o src/platform/dma.o src/platform/lcd.o
 EE_INCS += -I$(GSKIT)/include -Isrc
 EE_LDFLAGS += -L$(GSKIT)/lib
 EE_LIBS += -laudsrv -lgskit -ldmakit -ldma -lpad -lfileXio -lpatches -ldebug -leedebug -lc -lkernel -lm

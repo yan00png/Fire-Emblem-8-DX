@@ -285,3 +285,28 @@ for _f, _pairs in (("src/bmudisp.c", [("x < -16 || x > DISPLAY_WIDTH+16", "x < -
     for _a, _b in _pairs:
         _s = _s.replace(_a, _b)
     open(_p, "w").write(_s)
+
+# --- idioma: GetStringFromIndex*/Buffer consultam a traducao pt-BR (src/lang.c) antes de decodificar o texto original ---
+_p = os.path.join(D, "src/msg.c")
+_s = open(_p).read()
+if "PortLangGet" not in _s:
+    _s = _s.replace("EWRAM_DATA struct MsgBuffer sMsgString = {0};",
+                    "#ifdef _EE\nextern const u8 *PortLangGet(int index);\n#endif\nEWRAM_DATA struct MsgBuffer sMsgString = {0};", 1)
+    _s = _s.replace("""        return sMsgString.buffer1;
+    CallARM_DecompText(gMsgTable[index], sMsgString.buffer1);""",
+"""        return sMsgString.buffer1;
+#ifdef _EE
+    { const u8 *pt = PortLangGet(index);
+      if (pt) { CopyString(sMsgString.buffer1, (const char *)pt); SetMsgTerminator(sMsgString.buffer1); sActiveMsg = index; return sMsgString.buffer1; } }
+#endif
+    CallARM_DecompText(gMsgTable[index], sMsgString.buffer1);""", 1)
+    _s = _s.replace("""char * GetStringFromIndexInBuffer(int index, char *buffer)
+{
+""", """char * GetStringFromIndexInBuffer(int index, char *buffer)
+{
+#ifdef _EE
+    { const u8 *pt = PortLangGet(index);
+      if (pt) { CopyString(buffer, (const char *)pt); SetMsgTerminator(buffer); return buffer; } }
+#endif
+""", 1)
+    open(_p, "w").write(_s)
